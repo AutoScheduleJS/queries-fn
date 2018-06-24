@@ -1,6 +1,7 @@
-// import { assoc, assocPath, mergeAll } from 'ramda';
 import * as client from './client.structures';
 import * as internal from './internal.structures';
+export * from './client.structures';
+export * from './internal.structures';
 
 /**
  * Construct query's `name` property.
@@ -48,7 +49,7 @@ const isEndTimeTargetTimeBoundary = (
 
 export const position = (
   posi: client.IQueryPosition
-): Record<'position', internal.IQueryPosition> => {
+): Record<'position', internal.IQueryPositionInternal> => {
   const pos: client.IQueryPosition = deleteOptionalProperties(posi as any, [
     'start',
     'end',
@@ -58,7 +59,7 @@ export const position = (
     const min = pos.duration.min
       ? pos.duration.min
       : pos.start && pos.start.max && pos.end && pos.end.min
-        ? pos.end.min - pos.start.max
+        ? Math.max(pos.end.min - pos.start.max, 0)
         : pos.duration.target;
     return {
       position: {
@@ -72,13 +73,51 @@ export const position = (
   } else if (isStartEndPosition(pos)) {
     const endMin = isEndTimeTargetTimeBoundary(pos.end) ? pos.end.target : pos.end.min;
     const startMax = isStartTimeTargetTimeBoundary(pos.start) ? pos.start.target : pos.start.max;
-    const dur: internal.ITimeDuration = {
-      min: (pos.end.min || endMin) - (pos.start.max || startMax),
-      target: endMin - startMax,
+    const dur: internal.ITimeDurationInternal = {
+      min: Math.max((pos.end.min || endMin) - (pos.start.max || startMax), 0),
+      target: Math.max(endMin - startMax, 0),
     };
     return { position: { ...pos, duration: dur } };
   }
   throw new Error('Invalid position');
+};
+
+export const duration = (
+  target: number,
+  min?: number
+): Record<'duration', client.ITimeDuration> => {
+  return {
+    duration: { target, min },
+  };
+};
+
+export const durationInternal = (
+  target: number,
+  min?: number
+): Record<'duration', internal.ITimeDurationInternal> => {
+  return {
+    duration: { target, min: min ? min : target },
+  };
+};
+
+/* tslint:disable:no-object-literal-type-assertion */
+const tb = <T extends 'start' | 'end'>(t: T) => (target?: number, min?: number, max?: number) => {
+  return {
+    [t]: { target, min, max },
+  } as Record<T, client.ITimeBoundary>;
+};
+/* tslint:enable:no-object-literal-type-assertion */
+
+export const start = tb('start');
+export const end = tb('end');
+
+/**
+ * When using start/end with end.min < start.max, it is recommanded to define a minimal duration
+ */
+export const positionHelper = (
+  ...factories: Array<Partial<client.IQueryPosition>>
+): Record<'position', internal.IQueryPositionInternal> => {
+  return position(factories.reduce((a, b) => ({ ...a, ...b }), {}) as client.IQueryPosition);
 };
 
 export const queryLink = (
@@ -87,7 +126,7 @@ export const queryLink = (
   queryId: client.QueryID,
   potentialId: number,
   splitId?: number
-): internal.IQueryLink => ({
+): internal.IQueryLinkInternal => ({
   distance,
   origin,
   potentialId,
@@ -96,8 +135,8 @@ export const queryLink = (
 });
 
 export const links = (
-  queryLinks: internal.IQueryLink[]
-): Record<'links', ReadonlyArray<internal.IQueryLink>> | {} => {
+  queryLinks: internal.IQueryLinkInternal[]
+): Record<'links', ReadonlyArray<internal.IQueryLinkInternal>> | {} => {
   if (!queryLinks || !queryLinks.length) {
     return {};
   }
@@ -128,13 +167,13 @@ export const timeRestrictionsHelper = (
 ) =>
   ({ timeRestrictions: { [type]: timeRestriction(condition, ranges) } } as Record<
     'timeRestrictions',
-    internal.ITimeRestrictions
+    client.ITimeRestrictions
   >);
 /* tslint:enable */
 
 export const timeRestrictions = (
   restric: client.ITimeRestrictions
-): Record<'timeRestrictions', internal.ITimeRestrictions> | {} => {
+): Record<'timeRestrictions', client.ITimeRestrictions> | {} => {
   if (restric == null || (!restric.hour && !restric.month && !restric.weekday)) {
     return {};
   }
@@ -152,7 +191,7 @@ export const need = (
   find: any = {},
   quantity: number = 1,
   ref: string = '1'
-): internal.ITaskTransformNeed => {
+): client.ITaskTransformNeed => {
   return {
     collectionName,
     find,
@@ -162,25 +201,34 @@ export const need = (
   };
 };
 
+const defaultQuantityToOne = (
+  insert: { quantity?: number, [key:string]: any }
+): any => {
+  return {
+    ...insert,
+    quantity: insert.quantity != null ? insert.quantity : 1,
+  };
+};
+
 /**
  * Construct query's `transforms` property
  */
 export const transformsHelper = (
-  needs: ReadonlyArray<internal.ITaskTransformNeed>,
-  updates: ReadonlyArray<internal.ITaskTransformUpdate>,
-  inserts: ReadonlyArray<internal.ITaskTransformInsert>
-): Record<'transforms', internal.IQueryTransformation> => ({
+  needs: ReadonlyArray<client.ITaskTransformNeed>,
+  updates: ReadonlyArray<client.ITaskTransformUpdate>,
+  inserts: ReadonlyArray<client.ITaskTransformInsert>
+): Record<'transforms', internal.IQueryTransformationInternal> => ({
   transforms: {
     deletes: needs.filter(n => updates.every(update => update.ref !== n.ref)).map(n => n.ref),
-    inserts,
-    needs,
+    inserts: inserts.map(defaultQuantityToOne),
+    needs: needs.map(defaultQuantityToOne),
     updates,
   },
 });
 
 export const transforms = (
   transfos: client.IQueryTransformation
-): Record<'transforms', internal.IQueryTransformation> | {} => {
+): Record<'transforms', internal.IQueryTransformationInternal> | {} => {
   if (!transfos || (!transfos.inserts && !transfos.needs && !transfos.updates)) {
     return {};
   }
@@ -191,20 +239,29 @@ export const transforms = (
   );
 };
 
+export const splittable = (split?: boolean): Record<'splittable', boolean> => {
+  return {
+    splittable: split == null ? true : split
+  }
+}
+
 /* tslint:disable:no-object-literal-type-assertion */
 /**
  * Merge all partials queries to form one query. Provide default `id`, `name` and `kind` (`IBaseQuery` properties)
  * @param factories Partial query objects resulting from factories functions
  * @returns Query object built from merging all partials
  */
-export const queryFactory = (...factories: Array<Partial<internal.IQuery>>): internal.IQuery => {
+export const queryFactory = (
+  ...factories: Array<Partial<internal.IQueryInternal>>
+): internal.IQueryInternal => {
   return {
     ...id(),
     ...name(),
     ...kind(),
     ...position({ duration: { target: 2 } }),
+    ...splittable(false),
     ...factories.reduce((a, b) => ({ ...a, ...b }), {}),
-  } as internal.IQuery;
+  } as internal.IQueryInternal;
 };
 /* tslint:enable */
 /* tslint:disable:prefer-object-spread */
@@ -219,7 +276,7 @@ const deleteOptionalProperties = <T extends {}>(obj: T, optionalProps: Array<key
   return result;
 };
 /* tslint:enable */
-export const sanitize = (query: any): internal.IQuery => {
+export const sanitize = (query: any): internal.IQueryInternal => {
   return queryFactory(
     id(query.id),
     name(query.name),
@@ -227,11 +284,12 @@ export const sanitize = (query: any): internal.IQuery => {
     position(query.position),
     links(query.links),
     timeRestrictions(query.timeRestrictions),
-    transforms(query.transforms)
+    transforms(query.transforms),
+    splittable(query.splittable)
   );
 };
 
-export const isTaskTransformNeed = (userNeed: any): userNeed is internal.ITaskTransformNeed => {
+export const isTaskTransformNeed = (userNeed: any): userNeed is client.ITaskTransformNeed => {
   return (
     userNeed != null &&
     userNeed.collectionName != null &&
@@ -243,12 +301,12 @@ export const isTaskTransformNeed = (userNeed: any): userNeed is internal.ITaskTr
 
 export const isTaskTransformInsert = (
   userInsert: any
-): userInsert is internal.ITaskTransformInsert => {
+): userInsert is client.ITaskTransformInsert => {
   return userInsert != null && userInsert.collectionName != null && userInsert.doc != null;
 };
 
 export const isTaskTransformUpdate = (
   userUpdate: any
-): userUpdate is internal.ITaskTransformUpdate => {
+): userUpdate is client.ITaskTransformUpdate => {
   return userUpdate != null && userUpdate.ref != null && userUpdate.update != null;
 };
